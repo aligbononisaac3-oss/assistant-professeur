@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mon tableau — Assistant du professeur</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', sans-serif; }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ============================================================
+// CONFIGURATION — à remplacer par les valeurs de votre projet Supabase
+// (Project Settings > API)
+// ============================================================
+const SUPABASE_URL = "https://nwhymwqlgvtrkrioiwqu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_5B0RGJdbfRMLjVP-KsbKig_kOC3WPP9";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ============================================================
+// Design tokens — identité "tableau noir"
+// ============================================================
+const T = {
+  board: "#182922", boardLight: "#213629", boardLighter: "#2B4534",
+  chalk: "#F3EFE3", chalkDim: "#AEBCAF",
+  amber: "#E8A93D", coral: "#E2685A", teal: "#5BB39B",
+};
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+const STATUTS = {
+  a_faire: { label: "À faire", color: T.chalkDim },
+  en_cours: { label: "En cours", color: T.amber },
+  termine: { label: "Terminé", color: T.teal },
+};
+
+const FICHE_CHAMPS = [
+  { key: "objectifs", label: "Objectifs pédagogiques" },
+  { key: "prerequis", label: "Prérequis" },
+  { key: "situation_depart", label: "Situation de départ" },
+  { key: "activite_decouverte", label: "Activité de découverte" },
+  { key: "explication", label: "Explication" },
+  { key: "exemples", label: "Exemples" },
+  { key: "exercices", label: "Exercices" },
+  { key: "activite_remediation", label: "Remédiation" },
+  { key: "evaluation", label: "Évaluation" },
+  { key: "devoir", label: "Devoir à la maison" },
+  { key: "corrige", label: "Corrigé" },
+];
+
+// ============================================================
+// UI de base
+// ============================================================
+function ChalkUnderline({ color = T.amber, width = 120 }) {
+  return (
+    <svg width={width} height="10" viewBox={`0 0 ${width} 10`} style={{ display: "block", marginTop: 2 }}>
+      <path d={`M2 6 Q ${width / 4} 2, ${width / 2} 6 T ${width - 2} 5`} stroke={color} strokeWidth="3" fill="none" strokeLinecap="round" opacity="0.85" />
+    </svg>
+  );
+}
+function ProgressBar({ pct, color = T.amber }) {
+  return (
+    <div style={{ background: "rgba(243,239,227,0.12)", borderRadius: 999, height: 8, width: "100%", overflow: "hidden" }}>
+      <div style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: color, height: "100%", borderRadius: 999, transition: "width 0.4s ease" }} />
+    </div>
+  );
+}
+function Card({ children, onClick, style }) {
+  return <div onClick={onClick} style={{ background: T.boardLight, border: "1px solid rgba(243,239,227,0.08)", borderRadius: 14, padding: 16, cursor: onClick ? "pointer" : "default", ...style }}>{children}</div>;
+}
+function Button({ children, onClick, variant = "primary", style, type = "button", disabled }) {
+  const base = { fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 14, padding: "10px 16px", borderRadius: 10, border: "none", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1 };
+  const variants = {
+    primary: { background: T.amber, color: T.board },
+    ghost: { background: "transparent", color: T.chalk, border: "1px solid rgba(243,239,227,0.25)" },
+    danger: { background: "transparent", color: T.coral, border: "1px solid rgba(226,104,90,0.4)" },
+  };
+  return <button type={type} onClick={disabled ? undefined : onClick} style={{ ...base, ...variants[variant], ...style }}>{children}</button>;
+}
+function Input({ label, ...props }) {
+  return (
+    <label style={{ display: "block", marginBottom: 12 }}>
+      <span style={{ fontSize: 12, color: T.chalkDim, display: "block", marginBottom: 4 }}>{label}</span>
+      <input {...props} style={{ width: "100%", background: T.board, border: "1px solid rgba(243,239,227,0.15)", borderRadius: 8, padding: "10px 12px", color: T.chalk, fontSize: 14, boxSizing: "border-box" }} />
+    </label>
+  );
+}
+function TextArea({ label, ...props }) {
+  return (
+    <label style={{ display: "block", marginBottom: 12 }}>
+      <span style={{ fontSize: 12, color: T.chalkDim, display: "block", marginBottom: 4 }}>{label}</span>
+      <textarea {...props} rows={props.rows || 3} style={{ width: "100%", background: T.board, border: "1px solid rgba(243,239,227,0.15)", borderRadius: 8, padding: "10px 12px", color: T.chalk, fontSize: 14, boxSizing: "border-box", resize: "vertical" }} />
+    </label>
+  );
+}
+function Modal({ title, onClose, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.boardLighter, width: "100%", maxWidth: 520, margin: "0 auto", borderRadius: "18px 18px 0 0", padding: 20, maxHeight: "85vh", overflowY: "auto" }}>
+        <div style={{ color: T.chalk, fontFamily: "'Caveat', cursive", fontSize: 26, fontWeight: 700, marginBottom: 12 }}>{title}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function EmptyState({ text, cta, onClick }) {
+  return <Card style={{ textAlign: "center", padding: 28 }}><div style={{ color: T.chalkDim, fontSize: 14, marginBottom: 14 }}>{text}</div><Button onClick={onClick}>{cta}</Button></Card>;
+}
+function SectionTitle({ children }) {
+  return <div style={{ color: T.chalk, fontFamily: "'Caveat', cursive", fontSize: 24, fontWeight: 700, marginBottom: 4 }}>{children}</div>;
+}
+
+// ============================================================
+// Authentification
+// ============================================================
+function AuthScreen() {
+  const [mode, setMode] = useState("login"); // login | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [nom, setNom] = useState("");
+  const [erreur, setErreur] = useState("");
+  const [chargement, setChargement] = useState(false);
+
+  async function submit() {
+    setErreur(""); setChargement(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email, password, options: { data: { nom } } });
+        if (error) throw error;
+        setErreur("Compte créé. Vérifiez votre email si une confirmation est requise, puis connectez-vous.");
+        setMode("login");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (e) {
+      setErreur(e.message);
+    } finally {
+      setChargement(false);
+    }
+  }
+
+  return (
+    <div style={{ background: T.board, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <div style={{ fontFamily: "'Caveat', cursive", fontSize: 36, color: T.chalk, textAlign: "center", marginBottom: 4 }}>Mon tableau</div>
+        <div style={{ color: T.chalkDim, textAlign: "center", fontSize: 13, marginBottom: 24 }}>Assistant numérique du professeur</div>
+        <Card>
+          {mode === "signup" && <Input label="Nom" value={nom} onChange={(e) => setNom(e.target.value)} />}
+          <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Input label="Mot de passe" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          {erreur && <div style={{ color: T.coral, fontSize: 13, marginBottom: 12 }}>{erreur}</div>}
+          <Button onClick={submit} disabled={chargement || !email || !password} style={{ width: "100%" }}>
+            {chargement ? "..." : mode === "login" ? "Se connecter" : "Créer mon compte"}
+          </Button>
+          <div onClick={() => setMode(mode === "login" ? "signup" : "login")} style={{ color: T.chalkDim, fontSize: 13, textAlign: "center", marginTop: 14, cursor: "pointer" }}>
+            {mode === "login" ? "Pas encore de compte ? Créer un compte" : "Déjà un compte ? Se connecter"}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// App principale
+// ============================================================
+function App({ session }) {
+  const [classes, setClasses] = useState([]);
+  const [lecons, setLecons] = useState([]);
+  const [fiches, setFiches] = useState([]);
+  const [chargement, setChargement] = useState(true);
+  const [tab, setTab] = useState("aujourdhui");
+  const [selectedClasse, setSelectedClasse] = useState(null);
+  const [showAddClasse, setShowAddClasse] = useState(false);
+  const [showAddChapitre, setShowAddChapitre] = useState(false);
+  const [journalDraft, setJournalDraft] = useState(null);
+  const [ficheDraft, setFicheDraft] = useState(null);
+
+  async function reload() {
+    const { data: cls } = await supabase.from("classes").select("*, chapitres(*)").order("created_at");
+    const { data: lec } = await supabase.from("lecons").select("*").order("date", { ascending: false });
+    const { data: fic } = await supabase.from("fiches").select("*").order("created_at", { ascending: false });
+    setClasses(cls || []);
+    setLecons(lec || []);
+    setFiches(fic || []);
+    setChargement(false);
+  }
+
+  useEffect(() => { reload(); }, []);
+
+  async function addClasse({ nom, niveau, matiere }) {
+    await supabase.from("classes").insert({ professeur_id: session.user.id, nom, niveau, matiere });
+    setShowAddClasse(false);
+    reload();
+  }
+
+  async function addChapitre(classeId, { titre, heures_prevues }) {
+    await supabase.from("chapitres").insert({ classe_id: classeId, titre, heures_prevues: Number(heures_prevues) || 0 });
+    setShowAddChapitre(false);
+    reload();
+  }
+
+  async function setChapitreStatut(classeId, chapitreId, statut) {
+    await supabase.from("chapitres").update({ statut }).eq("id", chapitreId);
+    reload();
+  }
+
+  async function addLecon(classeId, chapitreId, entry) {
+    await supabase.from("lecons").insert({ classe_id: classeId, chapitre_id: chapitreId, ...entry });
+    const chapitre = classes.flatMap((c) => c.chapitres).find((c) => c.id === chapitreId);
+    if (chapitre) {
+      const nouvellesHeures = (chapitre.heures_realisees || 0) + (Number(entry.duree) || 0);
+      await supabase.from("chapitres").update({
+        heures_realisees: nouvellesHeures,
+        statut: chapitre.statut === "a_faire" ? "en_cours" : chapitre.statut,
+      }).eq("id", chapitreId);
+    }
+    setJournalDraft(null);
+    reload();
+  }
+
+  async function addFiche({ classeId, chapitreId, sujet, duree, contenu }) {
+    await supabase.from("fiches").insert({
+      professeur_id: session.user.id, classe_id: classeId, chapitre_id: chapitreId, sujet, duree, contenu,
+    });
+    reload();
+  }
+
+  async function genererFicheIA({ sujet, duree, contexte }) {
+    const res = await fetch("/api/generer-fiche", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sujet, duree, contexte }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.fiche;
+  }
+
+  function progressionClasse(classe) {
+    const total = (classe.chapitres || []).reduce((s, c) => s + (c.heures_prevues || 0), 0);
+    const fait = (classe.chapitres || []).reduce((s, c) => s + Math.min(c.heures_realisees || 0, c.heures_prevues || c.heures_realisees || 0), 0);
+    if (total === 0) return 0;
+    return Math.round((fait / total) * 100);
+  }
+
+  if (chargement) {
+    return <div style={{ background: T.board, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: T.chalkDim }}>Chargement…</div>;
+  }
+
+  return (
+    <div style={{ background: T.board, minHeight: "100vh" }}>
+      <div style={{ padding: "24px 20px 16px", borderBottom: "1px solid rgba(243,239,227,0.08)", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontFamily: "'Caveat', cursive", fontSize: 34, fontWeight: 700, color: T.chalk, lineHeight: 1 }}>Mon tableau</div>
+          <ChalkUnderline width={140} />
+          <div style={{ color: T.chalkDim, fontSize: 13, marginTop: 6 }}>{new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}</div>
+        </div>
+        <div onClick={() => supabase.auth.signOut()} style={{ color: T.chalkDim, fontSize: 12, cursor: "pointer" }}>Déconnexion</div>
+      </div>
+
+      <div style={{ padding: 20, paddingBottom: 100, maxWidth: 520, margin: "0 auto" }}>
+        {tab === "aujourdhui" && (
+          <Aujourdhui classes={classes} progressionClasse={progressionClasse}
+            onOpenClasse={(c) => { setSelectedClasse(c.id); setTab("classes"); }}
+            onJournal={(c) => setJournalDraft({ classeId: c.id, chapitreId: (c.chapitres.find((ch) => ch.statut !== "termine") || c.chapitres[0] || {}).id, date: todayISO(), duree: 1, contenu: "", devoir: "", observations: "" })}
+            onAddClasse={() => setShowAddClasse(true)} />
+        )}
+        {tab === "classes" && (
+          <Classes classes={classes} selectedClasse={selectedClasse} setSelectedClasse={setSelectedClasse}
+            progressionClasse={progressionClasse} onAddClasse={() => setShowAddClasse(true)}
+            onAddChapitre={() => setShowAddChapitre(true)} onSetStatut={setChapitreStatut}
+            onGenererFiche={(c, ch) => setFicheDraft({ classeId: c.id, chapitreId: ch.id, sujet: ch.titre, duree: 55 })} />
+        )}
+        {tab === "journal" && (
+          <Journal classes={classes} lecons={lecons}
+            onJournal={(c) => setJournalDraft({ classeId: c.id, chapitreId: (c.chapitres[0] || {}).id, date: todayISO(), duree: 1, contenu: "", devoir: "", observations: "" })} />
+        )}
+        {tab === "ia" && (
+          <FichesIA classes={classes} fiches={fiches}
+            onGenerer={(c) => setFicheDraft({ classeId: c.id, chapitreId: (c.chapitres[0] || {}).id, sujet: "", duree: 55 })} />
+        )}
+      </div>
+
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.boardLight, borderTop: "1px solid rgba(243,239,227,0.1)", display: "flex" }}>
+        {[{ id: "aujourdhui", label: "Aujourd'hui" }, { id: "classes", label: "Classes" }, { id: "journal", label: "Journal" }, { id: "ia", label: "Fiches IA" }].map((t) => (
+          <div key={t.id} onClick={() => setTab(t.id)} style={{ flex: 1, textAlign: "center", padding: "14px 0", color: tab === t.id ? T.amber : T.chalkDim, fontWeight: tab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer" }}>{t.label}</div>
+        ))}
+      </div>
+
+      {showAddClasse && <AddClasseModal onClose={() => setShowAddClasse(false)} onSave={addClasse} />}
+      {showAddChapitre && selectedClasse && <AddChapitreModal onClose={() => setShowAddChapitre(false)} onSave={(v) => addChapitre(selectedClasse, v)} />}
+      {journalDraft && (
+        <JournalModal draft={journalDraft} classe={classes.find((c) => c.id === journalDraft.classeId)} onChange={setJournalDraft} onClose={() => setJournalDraft(null)}
+          onSave={() => addLecon(journalDraft.classeId, journalDraft.chapitreId, { date: journalDraft.date, duree: journalDraft.duree, contenu: journalDraft.contenu, devoir: journalDraft.devoir, observations: journalDraft.observations })} />
+      )}
+      {ficheDraft && (
+        <FicheIAModal draft={ficheDraft} classe={classes.find((c) => c.id === ficheDraft.classeId)} onChange={setFicheDraft} onClose={() => setFicheDraft(null)}
+          genererFicheIA={genererFicheIA}
+          onSave={(fiche) => { addFiche(fiche); setFicheDraft(null); }} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Écrans
+// ============================================================
+function Aujourdhui({ classes, progressionClasse, onOpenClasse, onJournal, onAddClasse }) {
+  if (classes.length === 0) return <EmptyState text="Aucune classe pour l'instant. Ajoutez votre première classe." cta="+ Ajouter une classe" onClick={onAddClasse} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SectionTitle>Vos classes</SectionTitle>
+      {classes.map((c) => {
+        const pct = progressionClasse(c);
+        const alerte = (c.chapitres || []).some((ch) => ch.statut === "en_cours" && ch.heures_realisees >= (ch.heures_prevues || 0));
+        return (
+          <Card key={c.id}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div><div style={{ color: T.chalk, fontWeight: 600, fontSize: 15 }}>{c.nom} — {c.matiere}</div><div style={{ color: T.chalkDim, fontSize: 12 }}>{c.niveau}</div></div>
+              <div style={{ color: T.amber, fontWeight: 700, fontSize: 15 }}>{pct}%</div>
+            </div>
+            <div style={{ margin: "10px 0" }}><ProgressBar pct={pct} /></div>
+            {alerte && <div style={{ color: T.coral, fontSize: 12, marginBottom: 10 }}>⚠️ Un chapitre a dépassé ses heures prévues</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button variant="ghost" onClick={() => onOpenClasse(c)} style={{ flex: 1 }}>Voir le programme</Button>
+              <Button onClick={() => onJournal(c)} style={{ flex: 1 }} disabled={(c.chapitres || []).length === 0}>+ Journal</Button>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function Classes({ classes, selectedClasse, setSelectedClasse, progressionClasse, onAddClasse, onAddChapitre, onSetStatut, onGenererFiche }) {
+  const classe = classes.find((c) => c.id === selectedClasse);
+  if (!classe) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><SectionTitle>Vos classes</SectionTitle><Button onClick={onAddClasse}>+ Classe</Button></div>
+        {classes.length === 0 && <EmptyState text="Aucune classe enregistrée." cta="+ Ajouter une classe" onClick={onAddClasse} />}
+        {classes.map((c) => (
+          <Card key={c.id} onClick={() => setSelectedClasse(c.id)}>
+            <div style={{ color: T.chalk, fontWeight: 600 }}>{c.nom} — {c.matiere}</div>
+            <div style={{ color: T.chalkDim, fontSize: 12 }}>{c.niveau} · {(c.chapitres || []).length} chapitre(s)</div>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+  const pct = progressionClasse(classe);
+  return (
+    <div>
+      <div onClick={() => setSelectedClasse(null)} style={{ color: T.chalkDim, fontSize: 13, cursor: "pointer", marginBottom: 12 }}>← Toutes les classes</div>
+      <SectionTitle>{classe.nom} — {classe.matiere}</SectionTitle>
+      <div style={{ color: T.chalkDim, fontSize: 13, marginBottom: 12 }}>{classe.niveau} · Progression globale {pct}%</div>
+      <ProgressBar pct={pct} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "20px 0 10px" }}>
+        <div style={{ color: T.chalk, fontWeight: 600, fontSize: 14 }}>Programme</div>
+        <Button variant="ghost" onClick={onAddChapitre}>+ Chapitre</Button>
+      </div>
+      {(classe.chapitres || []).length === 0 && <EmptyState text="Ajoutez les chapitres de votre programme." cta="+ Ajouter un chapitre" onClick={onAddChapitre} />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {(classe.chapitres || []).map((ch) => (
+          <Card key={ch.id}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ color: T.chalk, fontSize: 14, fontWeight: 500 }}>{ch.titre}</div>
+              <div style={{ color: STATUTS[ch.statut].color, fontSize: 12, fontWeight: 600 }}>{STATUTS[ch.statut].label}</div>
+            </div>
+            <div style={{ color: T.chalkDim, fontSize: 12, marginTop: 4 }}>{ch.heures_realisees}h / {ch.heures_prevues}h prévues</div>
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              {Object.keys(STATUTS).map((s) => (
+                <button key={s} onClick={() => onSetStatut(classe.id, ch.id, s)} style={{ fontSize: 11, padding: "5px 9px", borderRadius: 7, border: `1px solid ${ch.statut === s ? STATUTS[s].color : "rgba(243,239,227,0.15)"}`, background: ch.statut === s ? "rgba(232,169,61,0.12)" : "transparent", color: ch.statut === s ? STATUTS[s].color : T.chalkDim, cursor: "pointer" }}>{STATUTS[s].label}</button>
+              ))}
+            </div>
+            <div style={{ marginTop: 10 }}><Button variant="ghost" onClick={() => onGenererFiche(classe, ch)} style={{ width: "100%" }}>🤖 Générer une fiche de préparation</Button></div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Journal({ classes, lecons, onJournal }) {
+  const classesAvecChapitres = classes.filter((c) => (c.chapitres || []).length > 0);
+  return (
+    <div>
+      <SectionTitle>Journal de classe</SectionTitle>
+      {classesAvecChapitres.length > 0 && (
+        <div style={{ display: "flex", gap: 8, overflowX: "auto", padding: "12px 0" }}>
+          {classesAvecChapitres.map((c) => <Button key={c.id} variant="ghost" onClick={() => onJournal(c)} style={{ whiteSpace: "nowrap" }}>+ {c.nom}</Button>)}
+        </div>
+      )}
+      {lecons.length === 0 && <EmptyState text="Aucune séance enregistrée pour l'instant." cta="Ouvrez une classe pour commencer" onClick={() => {}} />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {lecons.map((l) => {
+          const classe = classes.find((c) => c.id === l.classe_id);
+          const chapitre = (classe?.chapitres || []).find((ch) => ch.id === l.chapitre_id);
+          return (
+            <Card key={l.id}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <div style={{ color: T.chalk, fontSize: 13, fontWeight: 600 }}>{classe?.nom} — {chapitre?.titre}</div>
+                <div style={{ color: T.chalkDim, fontSize: 12 }}>{l.date}</div>
+              </div>
+              <div style={{ color: T.chalkDim, fontSize: 13, marginTop: 6 }}>{l.contenu}</div>
+              {l.devoir && <div style={{ color: T.amber, fontSize: 12, marginTop: 6 }}>Devoir : {l.devoir}</div>}
+              {l.observations && <div style={{ color: T.chalkDim, fontSize: 12, marginTop: 4, fontStyle: "italic" }}>{l.observations}</div>}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FichesIA({ classes, fiches, onGenerer }) {
+  const [ouverte, setOuverte] = useState(null);
+  const classesAvecChapitres = classes.filter((c) => (c.chapitres || []).length > 0);
+  return (
+    <div>
+      <SectionTitle>Fiches de préparation</SectionTitle>
+      <div style={{ color: T.chalkDim, fontSize: 13, marginBottom: 14 }}>Générées par IA, à relire et ajuster avant usage en classe.</div>
+      {classesAvecChapitres.length > 0 && (
+        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 14 }}>
+          {classesAvecChapitres.map((c) => <Button key={c.id} variant="ghost" onClick={() => onGenerer(c)} style={{ whiteSpace: "nowrap" }}>🤖 {c.nom}</Button>)}
+        </div>
+      )}
+      {fiches.length === 0 && <EmptyState text="Aucune fiche générée pour l'instant." cta="Choisissez une classe ci-dessus" onClick={() => {}} />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {fiches.map((f) => {
+          const classe = classes.find((c) => c.id === f.classe_id);
+          const estOuverte = ouverte === f.id;
+          return (
+            <Card key={f.id} onClick={() => setOuverte(estOuverte ? null : f.id)}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <div style={{ color: T.chalk, fontSize: 14, fontWeight: 600 }}>{f.sujet}</div>
+                <div style={{ color: T.chalkDim, fontSize: 12 }}>{f.duree} min</div>
+              </div>
+              <div style={{ color: T.chalkDim, fontSize: 12, marginTop: 2 }}>{classe?.nom}</div>
+              {estOuverte && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  {FICHE_CHAMPS.map(({ key, label }) => f.contenu && f.contenu[key] ? (
+                    <div key={key}><div style={{ color: T.amber, fontSize: 12, fontWeight: 600, marginBottom: 2 }}>{label}</div><div style={{ color: T.chalk, fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{f.contenu[key]}</div></div>
+                  ) : null)}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Modales
+// ============================================================
+function AddClasseModal({ onClose, onSave }) {
+  const [nom, setNom] = useState(""); const [niveau, setNiveau] = useState(""); const [matiere, setMatiere] = useState("");
+  return (
+    <Modal title="Nouvelle classe" onClose={onClose}>
+      <Input label="Nom de la classe" placeholder="Ex : 3e A" value={nom} onChange={(e) => setNom(e.target.value)} />
+      <Input label="Niveau" placeholder="Ex : 3e" value={niveau} onChange={(e) => setNiveau(e.target.value)} />
+      <Input label="Matière" placeholder="Ex : Français" value={matiere} onChange={(e) => setMatiere(e.target.value)} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+        <Button onClick={() => nom && onSave({ nom, niveau, matiere })} style={{ flex: 1 }}>Enregistrer</Button>
+      </div>
+    </Modal>
+  );
+}
+function AddChapitreModal({ onClose, onSave }) {
+  const [titre, setTitre] = useState(""); const [heures, setHeures] = useState("");
+  return (
+    <Modal title="Nouveau chapitre" onClose={onClose}>
+      <Input label="Titre du chapitre" value={titre} onChange={(e) => setTitre(e.target.value)} />
+      <Input label="Heures prévues" type="number" value={heures} onChange={(e) => setHeures(e.target.value)} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+        <Button onClick={() => titre && onSave({ titre, heures_prevues: heures })} style={{ flex: 1 }}>Enregistrer</Button>
+      </div>
+    </Modal>
+  );
+}
+function JournalModal({ draft, classe, onChange, onClose, onSave }) {
+  if (!classe) return null;
+  return (
+    <Modal title={`Journal — ${classe.nom}`} onClose={onClose}>
+      <label style={{ display: "block", marginBottom: 12 }}>
+        <span style={{ fontSize: 12, color: T.chalkDim, display: "block", marginBottom: 4 }}>Chapitre</span>
+        <select value={draft.chapitreId || ""} onChange={(e) => onChange({ ...draft, chapitreId: e.target.value })} style={{ width: "100%", background: T.board, border: "1px solid rgba(243,239,227,0.15)", borderRadius: 8, padding: "10px 12px", color: T.chalk, fontSize: 14 }}>
+          {(classe.chapitres || []).map((ch) => <option key={ch.id} value={ch.id}>{ch.titre}</option>)}
+        </select>
+      </label>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ flex: 1 }}><Input label="Date" type="date" value={draft.date} onChange={(e) => onChange({ ...draft, date: e.target.value })} /></div>
+        <div style={{ width: 100 }}><Input label="Durée (h)" type="number" step="0.5" value={draft.duree} onChange={(e) => onChange({ ...draft, duree: e.target.value })} /></div>
+      </div>
+      <TextArea label="Contenu réalisé" value={draft.contenu} onChange={(e) => onChange({ ...draft, contenu: e.target.value })} />
+      <Input label="Devoir donné (optionnel)" value={draft.devoir} onChange={(e) => onChange({ ...draft, devoir: e.target.value })} />
+      <TextArea label="Observations (optionnel)" rows={2} value={draft.observations} onChange={(e) => onChange({ ...draft, observations: e.target.value })} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+        <Button onClick={onSave} style={{ flex: 1 }} disabled={!draft.chapitreId || !draft.contenu}>Enregistrer</Button>
+      </div>
+    </Modal>
+  );
+}
+function FicheIAModal({ draft, classe, onChange, onClose, onSave, genererFicheIA }) {
+  const [statut, setStatut] = useState("form");
+  const [erreur, setErreur] = useState("");
+  const [resultat, setResultat] = useState(null);
+  if (!classe) return null;
+
+  async function generer() {
+    setStatut("chargement"); setErreur("");
+    try {
+      const contexte = `${classe.nom} (${classe.niveau}, ${classe.matiere})`;
+      const fiche = await genererFicheIA({ sujet: draft.sujet, duree: draft.duree, contexte });
+      setResultat(fiche); setStatut("resultat");
+    } catch (e) {
+      setErreur(e.message || "La génération a échoué."); setStatut("erreur");
+    }
+  }
+  function modifierChamp(key, value) { setResultat((r) => ({ ...r, [key]: value })); }
+  function enregistrer() { onSave({ classeId: draft.classeId, chapitreId: draft.chapitreId, sujet: draft.sujet, duree: draft.duree, contenu: resultat }); }
+
+  return (
+    <Modal title="Fiche de préparation IA" onClose={onClose}>
+      {statut === "form" && (
+        <>
+          <div style={{ color: T.chalkDim, fontSize: 13, marginBottom: 12 }}>{classe.nom} — {classe.matiere}</div>
+          <Input label="Sujet du cours" value={draft.sujet} onChange={(e) => onChange({ ...draft, sujet: e.target.value })} />
+          <Input label="Durée (minutes)" type="number" value={draft.duree} onChange={(e) => onChange({ ...draft, duree: e.target.value })} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+            <Button onClick={generer} style={{ flex: 1 }} disabled={!draft.sujet}>Générer</Button>
+          </div>
+        </>
+      )}
+      {statut === "chargement" && <div style={{ textAlign: "center", padding: "30px 0", color: T.chalkDim }}>Génération de la fiche en cours…</div>}
+      {statut === "erreur" && (
+        <div>
+          <div style={{ color: T.coral, fontSize: 13, marginBottom: 14 }}>{erreur}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+            <Button onClick={generer} style={{ flex: 1 }}>Réessayer</Button>
+          </div>
+        </div>
+      )}
+      {statut === "resultat" && resultat && (
+        <div>
+          <div style={{ color: T.chalkDim, fontSize: 12, marginBottom: 12 }}>Relisez et ajustez chaque section avant utilisation.</div>
+          {FICHE_CHAMPS.map(({ key, label }) => <TextArea key={key} label={label} rows={2} value={resultat[key] || ""} onChange={(e) => modifierChamp(key, e.target.value)} />)}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Button variant="ghost" onClick={onClose} style={{ flex: 1 }}>Annuler</Button>
+            <Button onClick={enregistrer} style={{ flex: 1 }}>Enregistrer la fiche</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ============================================================
+// Racine : gère la session Supabase
+// ============================================================
+function Root() {
+  const [session, setSession] = useState(undefined);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+  if (session === undefined) return <div style={{ background: T.board, minHeight: "100vh" }} />;
+  return session ? <App session={session} /> : <AuthScreen />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
+</script>
+</body>
+</html>
